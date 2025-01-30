@@ -1,0 +1,1719 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name"
+		},
+		"LS_BLOB_SAS_URI": {
+			"type": "string"
+		},
+		"LS_BLOB_HUBSPOT": {
+			"type": "string"
+		},
+		"LS_SNOWFLAKE_BASIC": {
+			"type": "string"
+		},
+		"LS_AZURE_SQL": {
+			"type": "string"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_SNOWFLAKE_TO_SQL_MASTER')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "This pipeline is used to ingest the data from the Snowflake and load it into Azure SQL DB as an Incremental Load. Based on the user input in the metadata file, it will select all or only specified columns from the table. ",
+				"activities": [
+					{
+						"name": "ForEach - Objects",
+						"description": "It will iterate all the tables mentioned in the metadata file",
+						"type": "ForEach",
+						"dependsOn": [
+							{
+								"activity": "Filter JSON Snowflake",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "Filter - Snowflake and Active Entries",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@activity('Filter - Snowflake and Active Entries').output.value",
+								"type": "Expression"
+							},
+							"activities": [
+								{
+									"name": "If Condition - All Columns or Selected Columns",
+									"description": "It will check for the columns whether to select all the columns or only specified columns from the table",
+									"type": "IfCondition",
+									"state": "Inactive",
+									"onInactiveMarkAs": "Succeeded",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"expression": {
+											"value": "@equals(coalesce(item().relative_url_or_input_query,'all columns'),'all columns')",
+											"type": "Expression"
+										},
+										"ifFalseActivities": [
+											{
+												"name": "Copy data - Snowflake Tables Selected Cols",
+												"description": "Copy the Snowflake tables and load it into ADLS as PARQUET",
+												"type": "Copy",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "0.00:40:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "SnowflakeV2Source",
+														"query": {
+															"value": "@concat('SELECT ', item().relative_url_or_input_query , ' FROM '\n            , activity('Filter JSON Snowflake').output.value[0].source_config.schema, '.'\n            ,toUpper(item().source_object_name)\n        )\n",
+															"type": "Expression"
+														},
+														"exportSettings": {
+															"type": "SnowflakeExportCopyCommand",
+															"additionalCopyOptions": {
+																"MAX_FILE_SIZE": "1073741824"
+															}
+														}
+													},
+													"sink": {
+														"type": "AzureSqlSink",
+														"preCopyScript": {
+															"value": "@concat('DROP TABLE IF EXISTS ',item().raw_schema,'.',item().parameters.sink_object_name)",
+															"type": "Expression"
+														},
+														"writeBehavior": "insert",
+														"sqlWriterUseTableLock": false,
+														"tableOption": "autoCreate",
+														"disableMetricsCollection": false
+													},
+													"enableStaging": true,
+													"stagingSettings": {
+														"linkedServiceName": {
+															"referenceName": "[parameters('LS_BLOB_SAS_URI')]",
+															"type": "LinkedServiceReference"
+														},
+														"path": "raw"
+													}
+												},
+												"inputs": [
+													{
+														"referenceName": "DS_SNOWFLAKE_QUERY",
+														"type": "DatasetReference",
+														"parameters": {
+															"account_name": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.account_name",
+																"type": "Expression"
+															},
+															"database": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.database",
+																"type": "Expression"
+															},
+															"warehouse": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.warehouse",
+																"type": "Expression"
+															},
+															"username": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.username",
+																"type": "Expression"
+															},
+															"role": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.role",
+																"type": "Expression"
+															},
+															"kvpassword": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.kvpassword",
+																"type": "Expression"
+															}
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DS_AZURE_SQL",
+														"type": "DatasetReference",
+														"parameters": {
+															"table_schema": {
+																"value": "@item().raw_schema",
+																"type": "Expression"
+															},
+															"table_name": {
+																"value": "@item().sink_object_name",
+																"type": "Expression"
+															},
+															"server": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.server",
+																"type": "Expression"
+															},
+															"database": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.database",
+																"type": "Expression"
+															},
+															"username": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.username",
+																"type": "Expression"
+															},
+															"secretname": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.secretname",
+																"type": "Expression"
+															}
+														}
+													}
+												]
+											}
+										],
+										"ifTrueActivities": [
+											{
+												"name": "Copy data - Snowflake Tables All Cols",
+												"description": "Copy the Snowflake tables and load it into ADLS as PARQUET",
+												"type": "Copy",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "0.00:40:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "SnowflakeV2Source",
+														"query": {
+															"value": "@concat('SELECT * FROM '\n            , activity('Filter JSON Snowflake').output.value[0].source_config.schema\n            , '.'\n            ,toUpper(item().source_object_name)\n        )",
+															"type": "Expression"
+														},
+														"exportSettings": {
+															"type": "SnowflakeExportCopyCommand",
+															"additionalCopyOptions": {
+																"MAX_FILE_SIZE": "1073741824"
+															}
+														}
+													},
+													"sink": {
+														"type": "AzureSqlSink",
+														"preCopyScript": {
+															"value": "@concat('DROP TABLE IF EXISTS ',item().raw_schema,'.',item().parameters.sink_object_name)",
+															"type": "Expression"
+														},
+														"writeBehavior": "insert",
+														"sqlWriterUseTableLock": false,
+														"tableOption": "autoCreate",
+														"disableMetricsCollection": false
+													},
+													"enableStaging": true,
+													"stagingSettings": {
+														"linkedServiceName": {
+															"referenceName": "[parameters('LS_BLOB_SAS_URI')]",
+															"type": "LinkedServiceReference"
+														},
+														"path": {
+															"value": "@activity('Filter JSON Snowflake').output.value[0].staging_config.directory",
+															"type": "Expression"
+														}
+													}
+												},
+												"inputs": [
+													{
+														"referenceName": "DS_SNOWFLAKE_QUERY",
+														"type": "DatasetReference",
+														"parameters": {
+															"account_name": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.account_name",
+																"type": "Expression"
+															},
+															"database": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.database",
+																"type": "Expression"
+															},
+															"warehouse": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.warehouse",
+																"type": "Expression"
+															},
+															"username": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.username",
+																"type": "Expression"
+															},
+															"role": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.role",
+																"type": "Expression"
+															},
+															"kvpassword": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.kvpassword",
+																"type": "Expression"
+															}
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DS_AZURE_SQL",
+														"type": "DatasetReference",
+														"parameters": {
+															"table_schema": {
+																"value": "@item().raw_schema",
+																"type": "Expression"
+															},
+															"table_name": {
+																"value": "@item().sink_object_name",
+																"type": "Expression"
+															},
+															"server": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.server",
+																"type": "Expression"
+															},
+															"database": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.database",
+																"type": "Expression"
+															},
+															"username": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.username",
+																"type": "Expression"
+															},
+															"secretname": {
+																"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.secretname",
+																"type": "Expression"
+															}
+														}
+													}
+												]
+											}
+										]
+									}
+								},
+								{
+									"name": "Switch - Snowflake FL and IL",
+									"type": "Switch",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"on": {
+											"value": "@item().load_type",
+											"type": "Expression"
+										},
+										"cases": [
+											{
+												"value": "FL",
+												"activities": [
+													{
+														"name": "Execute Pipeline - Snowflake Full Load",
+														"type": "ExecutePipeline",
+														"dependsOn": [],
+														"policy": {
+															"secureInput": false
+														},
+														"userProperties": [],
+														"typeProperties": {
+															"pipeline": {
+																"referenceName": "PL_SNOWFLAKE_TO_SQL_FL",
+																"type": "PipelineReference"
+															},
+															"waitOnCompletion": true,
+															"parameters": {
+																"relative_url_or_input_query": {
+																	"value": "@item().relative_url_or_input_query",
+																	"type": "Expression"
+																},
+																"src_account_name": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.account_name",
+																	"type": "Expression"
+																},
+																"src_database": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.database",
+																	"type": "Expression"
+																},
+																"src_warehouse": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.warehouse",
+																	"type": "Expression"
+																},
+																"src_username": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.username",
+																	"type": "Expression"
+																},
+																"src_role": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.role",
+																	"type": "Expression"
+																},
+																"src_kvpassword": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.kvpassword",
+																	"type": "Expression"
+																},
+																"src_schema": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.schema",
+																	"type": "Expression"
+																},
+																"src_object_name": {
+																	"value": "@item().source_object_name",
+																	"type": "Expression"
+																},
+																"sink_table_schema": {
+																	"value": "@item().raw_schema",
+																	"type": "Expression"
+																},
+																"sink_table_name": {
+																	"value": "@item().sink_object_name",
+																	"type": "Expression"
+																},
+																"sink_server": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.server",
+																	"type": "Expression"
+																},
+																"sink_database": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.database",
+																	"type": "Expression"
+																},
+																"sink_username": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.username",
+																	"type": "Expression"
+																},
+																"sink_secretname": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.secretname",
+																	"type": "Expression"
+																},
+																"stg_directory": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].staging_config.directory",
+																	"type": "Expression"
+																}
+															}
+														}
+													}
+												]
+											},
+											{
+												"value": "IL",
+												"activities": [
+													{
+														"name": "Execute Pipeline - Snowflake Incremental Load",
+														"type": "ExecutePipeline",
+														"dependsOn": [],
+														"policy": {
+															"secureInput": false
+														},
+														"userProperties": [],
+														"typeProperties": {
+															"pipeline": {
+																"referenceName": "PL_SNOWFLAKE_TO_SQL_IL",
+																"type": "PipelineReference"
+															},
+															"waitOnCompletion": true,
+															"parameters": {
+																"relative_url_or_input_query": {
+																	"value": "@item().relative_url_or_input_query",
+																	"type": "Expression"
+																},
+																"src_account_name": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.account_name",
+																	"type": "Expression"
+																},
+																"src_database": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.database",
+																	"type": "Expression"
+																},
+																"src_warehouse": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.warehouse",
+																	"type": "Expression"
+																},
+																"src_username": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.username",
+																	"type": "Expression"
+																},
+																"src_role": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.role",
+																	"type": "Expression"
+																},
+																"src_kvpassword": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.kvpassword",
+																	"type": "Expression"
+																},
+																"src_schema": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].source_config.schema",
+																	"type": "Expression"
+																},
+																"src_object_name": {
+																	"value": "@item().source_object_name",
+																	"type": "Expression"
+																},
+																"sink_table_schema": {
+																	"value": "@item().raw_schema",
+																	"type": "Expression"
+																},
+																"sink_table_name": {
+																	"value": "@item().sink_object_name",
+																	"type": "Expression"
+																},
+																"sink_server": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.server",
+																	"type": "Expression"
+																},
+																"sink_database": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.database",
+																	"type": "Expression"
+																},
+																"sink_username": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.username",
+																	"type": "Expression"
+																},
+																"sink_secretname": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].sink_config.secretname",
+																	"type": "Expression"
+																},
+																"stg_directory": {
+																	"value": "@activity('Filter JSON Snowflake').output.value[0].staging_config.directory",
+																	"type": "Expression"
+																},
+																"incremental_field": {
+																	"value": "@item().incremental_fields",
+																	"type": "Expression"
+																},
+																"sink_staging_table_schema": {
+																	"value": "@item().staging_schema_or_directory",
+																	"type": "Expression"
+																},
+																"sink_staging_table_name": {
+																	"value": "@item().sink_object_name",
+																	"type": "Expression"
+																}
+															}
+														}
+													}
+												]
+											}
+										]
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "Lookup_Source_ Config_JSON",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.00:10:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "JsonSource",
+								"storeSettings": {
+									"type": "AzureBlobStorageReadSettings",
+									"recursive": true,
+									"enablePartitionDiscovery": false
+								},
+								"formatSettings": {
+									"type": "JsonReadSettings"
+								}
+							},
+							"dataset": {
+								"referenceName": "DS_SRC_CONFIG_JSON",
+								"type": "DatasetReference"
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "Filter JSON Snowflake",
+						"type": "Filter",
+						"dependsOn": [
+							{
+								"activity": "Lookup_Source_ Config_JSON",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@activity('Lookup_Source_ Config_JSON').output.value",
+								"type": "Expression"
+							},
+							"condition": {
+								"value": "@and(equals(item().is_active,'1'),equals(item().source_name,'Snowflake'))",
+								"type": "Expression"
+							}
+						}
+					},
+					{
+						"name": "Lookup - DIaaS Metadata_Excel",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.00:10:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "DelimitedTextSource",
+								"storeSettings": {
+									"type": "AzureBlobStorageReadSettings",
+									"recursive": true,
+									"enablePartitionDiscovery": false
+								},
+								"formatSettings": {
+									"type": "DelimitedTextReadSettings"
+								}
+							},
+							"dataset": {
+								"referenceName": "DS_BLOB_TO_COLUMNS",
+								"type": "DatasetReference"
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "Filter - Snowflake and Active Entries",
+						"type": "Filter",
+						"dependsOn": [
+							{
+								"activity": "Lookup - DIaaS Metadata_Excel",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@activity('Lookup - DIaaS Metadata_Excel').output.value",
+								"type": "Expression"
+							},
+							"condition": {
+								"value": "@and(equals(item().source_name,'Snowflake'),equals(item().is_active,'TRUE'))",
+								"type": "Expression"
+							}
+						}
+					}
+				],
+				"folder": {
+					"name": "02_SRC_TO_DESTINATION/77_SNOWFLAKE/02_SF_TO_AZURE_SQL"
+				},
+				"annotations": [],
+				"lastPublishTime": "2024-03-14T20:25:43Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_SRC_CONFIG_JSON')]",
+				"[concat(variables('factoryId'), '/datasets/DS_BLOB_TO_COLUMNS')]",
+				"[concat(variables('factoryId'), '/datasets/DS_SNOWFLAKE_QUERY')]",
+				"[concat(variables('factoryId'), '/datasets/DS_AZURE_SQL')]",
+				"[concat(variables('factoryId'), '/pipelines/PL_SNOWFLAKE_TO_SQL_FL')]",
+				"[concat(variables('factoryId'), '/pipelines/PL_SNOWFLAKE_TO_SQL_IL')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_SRC_CONFIG_JSON')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "[parameters('LS_BLOB_HUBSPOT')]",
+					"type": "LinkedServiceReference"
+				},
+				"annotations": [],
+				"type": "Json",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobStorageLocation",
+						"fileName": "240821_source_config.json",
+						"container": "diaas-metadata"
+					}
+				},
+				"schema": {}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_BLOB_TO_COLUMNS')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "[parameters('LS_BLOB_HUBSPOT')]",
+					"type": "LinkedServiceReference"
+				},
+				"annotations": [],
+				"type": "DelimitedText",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobStorageLocation",
+						"fileName": "240729 DIaaS Metadata_INC_LOAD_TEST_FILE.csv",
+						"container": "diaas-metadata"
+					},
+					"columnDelimiter": ",",
+					"escapeChar": "\\",
+					"firstRowAsHeader": true,
+					"quoteChar": "\""
+				},
+				"schema": []
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_SNOWFLAKE_QUERY')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "This dataset is used to read the data from the Snowflake database. It requires user to pass the account name, database, warehouse, username, role and password. For password, we can store it in key vault and pass the secret name.",
+				"linkedServiceName": {
+					"referenceName": "[parameters('LS_SNOWFLAKE_BASIC')]",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"account_name": {
+							"value": "@dataset().account_name",
+							"type": "Expression"
+						},
+						"database": {
+							"value": "@dataset().database",
+							"type": "Expression"
+						},
+						"warehouse": {
+							"value": "@dataset().warehouse",
+							"type": "Expression"
+						},
+						"username": {
+							"value": "@dataset().username",
+							"type": "Expression"
+						},
+						"role": {
+							"value": "@dataset().role",
+							"type": "Expression"
+						},
+						"kvpassword": {
+							"value": "@dataset().kvpassword",
+							"type": "Expression"
+						}
+					}
+				},
+				"parameters": {
+					"account_name": {
+						"type": "string"
+					},
+					"database": {
+						"type": "string"
+					},
+					"warehouse": {
+						"type": "string"
+					},
+					"username": {
+						"type": "string"
+					},
+					"role": {
+						"type": "string"
+					},
+					"kvpassword": {
+						"type": "string"
+					}
+				},
+				"folder": {
+					"name": "05_SNOWFLAKE"
+				},
+				"annotations": [],
+				"type": "SnowflakeV2Table",
+				"schema": []
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_AZURE_SQL')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "[parameters('LS_AZURE_SQL')]",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"server": {
+							"value": "@dataset().server",
+							"type": "Expression"
+						},
+						"database": {
+							"value": "@dataset().database",
+							"type": "Expression"
+						},
+						"username": {
+							"value": "@dataset().username",
+							"type": "Expression"
+						},
+						"secretname": {
+							"value": "@dataset().secretname",
+							"type": "Expression"
+						}
+					}
+				},
+				"parameters": {
+					"table_schema": {
+						"type": "string"
+					},
+					"table_name": {
+						"type": "string"
+					},
+					"server": {
+						"type": "string"
+					},
+					"database": {
+						"type": "string"
+					},
+					"username": {
+						"type": "string"
+					},
+					"secretname": {
+						"type": "string"
+					}
+				},
+				"folder": {
+					"name": "03_AZURE_SQL"
+				},
+				"annotations": [],
+				"type": "AzureSqlTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": {
+						"value": "@dataset().table_schema",
+						"type": "Expression"
+					},
+					"table": {
+						"value": "@dataset().table_name",
+						"type": "Expression"
+					}
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_SNOWFLAKE_TO_SQL_FL')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "This pipeline is used to ingest the data from the Snowflake and load it into Azure SQL DB as Full Load. Based on the user input in the metadata file, it will select all or only specified columns from the table. ",
+				"activities": [
+					{
+						"name": "If Condition - All Columns or Selected Columns_copy1",
+						"description": "It will check for the columns whether to select all the columns or only specified columns from the table",
+						"type": "IfCondition",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@equals(coalesce(pipeline().parameters.relative_url_or_input_query,'all columns'),'all columns')",
+								"type": "Expression"
+							},
+							"ifFalseActivities": [
+								{
+									"name": "Copy data - Snowflake Tables Selected Cols",
+									"description": "Copy the Snowflake tables and load it into Azure SQL",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.00:40:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SnowflakeV2Source",
+											"query": {
+												"value": "@concat('SELECT ', pipeline().parameters.relative_url_or_input_query, ' FROM '\n            , pipeline().parameters.src_schema, '.'\n            ,toUpper(pipeline().parameters.src_object_name)\n        )",
+												"type": "Expression"
+											},
+											"exportSettings": {
+												"type": "SnowflakeExportCopyCommand",
+												"additionalCopyOptions": {
+													"MAX_FILE_SIZE": "1073741824"
+												}
+											}
+										},
+										"sink": {
+											"type": "AzureSqlSink",
+											"preCopyScript": {
+												"value": "@concat('DROP TABLE IF EXISTS ',pipeline().parameters.sink_table_schema,'.',pipeline().parameters.sink_table_name)",
+												"type": "Expression"
+											},
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false,
+											"tableOption": "autoCreate",
+											"disableMetricsCollection": false
+										},
+										"enableStaging": true,
+										"stagingSettings": {
+											"linkedServiceName": {
+												"referenceName": "[parameters('LS_BLOB_SAS_URI')]",
+												"type": "LinkedServiceReference"
+											},
+											"path": {
+												"value": "@pipeline().parameters.stg_directory",
+												"type": "Expression"
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_SNOWFLAKE_QUERY",
+											"type": "DatasetReference",
+											"parameters": {
+												"account_name": {
+													"value": "@pipeline().parameters.src_account_name",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.src_database",
+													"type": "Expression"
+												},
+												"warehouse": {
+													"value": "@pipeline().parameters.src_warehouse",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.src_username",
+													"type": "Expression"
+												},
+												"role": {
+													"value": "@pipeline().parameters.src_role",
+													"type": "Expression"
+												},
+												"kvpassword": {
+													"value": "@pipeline().parameters.src_kvpassword",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_AZURE_SQL",
+											"type": "DatasetReference",
+											"parameters": {
+												"table_schema": {
+													"value": "@pipeline().parameters.sink_table_schema",
+													"type": "Expression"
+												},
+												"table_name": {
+													"value": "@pipeline().parameters.sink_table_name",
+													"type": "Expression"
+												},
+												"server": {
+													"value": "@pipeline().parameters.sink_server",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.sink_database",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.sink_username",
+													"type": "Expression"
+												},
+												"secretname": {
+													"value": "@pipeline().parameters.sink_secretname",
+													"type": "Expression"
+												}
+											}
+										}
+									]
+								}
+							],
+							"ifTrueActivities": [
+								{
+									"name": "Copy data - Snowflake Tables All Cols_copy1",
+									"description": "Copy the Snowflake tables and load it into ADLS as PARQUET",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.00:40:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SnowflakeV2Source",
+											"query": {
+												"value": "@concat('SELECT * FROM '\n            , pipeline().parameters.src_schema\n            , '.'\n            ,toUpper(pipeline().parameters.src_object_name)\n        )",
+												"type": "Expression"
+											},
+											"exportSettings": {
+												"type": "SnowflakeExportCopyCommand",
+												"additionalCopyOptions": {
+													"MAX_FILE_SIZE": "1073741824"
+												}
+											}
+										},
+										"sink": {
+											"type": "AzureSqlSink",
+											"preCopyScript": {
+												"value": "@concat('DROP TABLE IF EXISTS ',pipeline().parameters.sink_table_schema,'.',pipeline().parameters.sink_table_name)",
+												"type": "Expression"
+											},
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false,
+											"tableOption": "autoCreate",
+											"disableMetricsCollection": false
+										},
+										"enableStaging": true,
+										"stagingSettings": {
+											"linkedServiceName": {
+												"referenceName": "[parameters('LS_BLOB_SAS_URI')]",
+												"type": "LinkedServiceReference"
+											},
+											"path": {
+												"value": "@pipeline().parameters.stg_directory",
+												"type": "Expression"
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_SNOWFLAKE_QUERY",
+											"type": "DatasetReference",
+											"parameters": {
+												"account_name": {
+													"value": "@pipeline().parameters.src_account_name",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.src_database",
+													"type": "Expression"
+												},
+												"warehouse": {
+													"value": "@pipeline().parameters.src_warehouse",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.src_username",
+													"type": "Expression"
+												},
+												"role": {
+													"value": "@pipeline().parameters.src_role",
+													"type": "Expression"
+												},
+												"kvpassword": {
+													"value": "@pipeline().parameters.src_kvpassword",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_AZURE_SQL",
+											"type": "DatasetReference",
+											"parameters": {
+												"table_schema": {
+													"value": "@pipeline().parameters.sink_table_schema",
+													"type": "Expression"
+												},
+												"table_name": {
+													"value": "@pipeline().parameters.sink_table_name",
+													"type": "Expression"
+												},
+												"server": {
+													"value": "@pipeline().parameters.sink_server",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.sink_database",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.sink_username",
+													"type": "Expression"
+												},
+												"secretname": {
+													"value": "@pipeline().parameters.sink_secretname",
+													"type": "Expression"
+												}
+											}
+										}
+									]
+								}
+							]
+						}
+					}
+				],
+				"parameters": {
+					"relative_url_or_input_query": {
+						"type": "string"
+					},
+					"src_account_name": {
+						"type": "string"
+					},
+					"src_database": {
+						"type": "string"
+					},
+					"src_warehouse": {
+						"type": "string"
+					},
+					"src_username": {
+						"type": "string"
+					},
+					"src_role": {
+						"type": "string"
+					},
+					"src_kvpassword": {
+						"type": "string"
+					},
+					"src_schema": {
+						"type": "string"
+					},
+					"src_object_name": {
+						"type": "string"
+					},
+					"sink_table_schema": {
+						"type": "string"
+					},
+					"sink_table_name": {
+						"type": "string"
+					},
+					"sink_server": {
+						"type": "string"
+					},
+					"sink_database": {
+						"type": "string"
+					},
+					"sink_username": {
+						"type": "string"
+					},
+					"sink_secretname": {
+						"type": "string"
+					},
+					"stg_directory": {
+						"type": "string"
+					}
+				},
+				"folder": {
+					"name": "02_SRC_TO_DESTINATION/77_SNOWFLAKE/02_SF_TO_AZURE_SQL"
+				},
+				"annotations": [],
+				"lastPublishTime": "2024-03-14T20:25:43Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_SNOWFLAKE_QUERY')]",
+				"[concat(variables('factoryId'), '/datasets/DS_AZURE_SQL')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_SNOWFLAKE_TO_SQL_IL')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "This pipeline is used to ingest the data from the Snowflake and load it into SQL DB. Based on the user input in the metadata file, it will select all or only specified columns from the table.",
+				"activities": [
+					{
+						"name": "If Condition - All Columns or Selected Columns_copy1",
+						"description": "It will check for the columns whether to select all the columns or only specified columns from the table",
+						"type": "IfCondition",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@equals(coalesce(pipeline().parameters.relative_url_or_input_query,'all columns'),'all columns')",
+								"type": "Expression"
+							},
+							"ifFalseActivities": [
+								{
+									"name": "Copy data - Snowflake Tables Selected Cols",
+									"description": "Copy the Snowflake tables and load it into Azure SQL",
+									"type": "Copy",
+									"state": "Inactive",
+									"onInactiveMarkAs": "Succeeded",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.00:40:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SnowflakeV2Source",
+											"query": {
+												"value": "@concat('SELECT ', pipeline().parameters.relative_url_or_input_query, ' FROM '\n            , pipeline().parameters.src_schema, '.'\n            ,toUpper(pipeline().parameters.src_object_name)\n        )",
+												"type": "Expression"
+											},
+											"exportSettings": {
+												"type": "SnowflakeExportCopyCommand",
+												"additionalCopyOptions": {
+													"MAX_FILE_SIZE": "1073741824"
+												}
+											}
+										},
+										"sink": {
+											"type": "AzureSqlSink",
+											"preCopyScript": {
+												"value": "@concat('DROP TABLE IF EXISTS ',pipeline().parameters.sink_table_schema,'.',pipeline().parameters.sink_table_name)",
+												"type": "Expression"
+											},
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false,
+											"tableOption": "autoCreate",
+											"disableMetricsCollection": false
+										},
+										"enableStaging": true,
+										"stagingSettings": {
+											"linkedServiceName": {
+												"referenceName": "[parameters('LS_BLOB_SAS_URI')]",
+												"type": "LinkedServiceReference"
+											},
+											"path": {
+												"value": "@pipeline().parameters.stg_directory",
+												"type": "Expression"
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_SNOWFLAKE_QUERY",
+											"type": "DatasetReference",
+											"parameters": {
+												"account_name": {
+													"value": "@pipeline().parameters.src_account_name",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.src_database",
+													"type": "Expression"
+												},
+												"warehouse": {
+													"value": "@pipeline().parameters.src_warehouse",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.src_username",
+													"type": "Expression"
+												},
+												"role": {
+													"value": "@pipeline().parameters.src_role",
+													"type": "Expression"
+												},
+												"kvpassword": {
+													"value": "@pipeline().parameters.src_kvpassword",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_AZURE_SQL",
+											"type": "DatasetReference",
+											"parameters": {
+												"table_schema": {
+													"value": "@pipeline().parameters.sink_table_schema",
+													"type": "Expression"
+												},
+												"table_name": {
+													"value": "@pipeline().parameters.sink_table_name",
+													"type": "Expression"
+												},
+												"server": {
+													"value": "@pipeline().parameters.sink_server",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.sink_database",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.sink_username",
+													"type": "Expression"
+												},
+												"secretname": {
+													"value": "@pipeline().parameters.sink_secretname",
+													"type": "Expression"
+												}
+											}
+										}
+									]
+								},
+								{
+									"name": "Copy data - IL Snowflake Tables Selected Cols",
+									"description": "Copy the Snowflake tables and load it into ADLS as PARQUET",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.00:40:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SnowflakeV2Source",
+											"query": {
+												"value": "@concat('SELECT ', pipeline().parameters.relative_url_or_input_query, ' FROM '\n            , pipeline().parameters.src_schema, '.'\n            ,toUpper(pipeline().parameters.src_object_name)\n            , ' WHERE '\n            , toUpper(pipeline().parameters.incremental_field)\n            , ' > '\n            , ' SELECT MAX('\n            , toUpper(pipeline().parameters.incremental_field)\n            , ') FROM '\n            , pipeline().parameters.sink_table_schema\n            , '.'\n            , pipeline().parameters.sink_table_name\n        )",
+												"type": "Expression"
+											},
+											"exportSettings": {
+												"type": "SnowflakeExportCopyCommand",
+												"additionalCopyOptions": {
+													"MAX_FILE_SIZE": "1073741824"
+												}
+											}
+										},
+										"sink": {
+											"type": "AzureSqlSink",
+											"preCopyScript": {
+												"value": "@concat('DROP TABLE IF EXISTS ',pipeline().parameters.sink_staging_table_schema,'.',pipeline().parameters.sink_staging_table_name)",
+												"type": "Expression"
+											},
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false,
+											"tableOption": "autoCreate",
+											"disableMetricsCollection": false
+										},
+										"enableStaging": true,
+										"stagingSettings": {
+											"linkedServiceName": {
+												"referenceName": "[parameters('LS_BLOB_SAS_URI')]",
+												"type": "LinkedServiceReference"
+											},
+											"path": {
+												"value": "@pipeline().parameters.stg_directory",
+												"type": "Expression"
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_SNOWFLAKE_QUERY",
+											"type": "DatasetReference",
+											"parameters": {
+												"account_name": {
+													"value": "@pipeline().parameters.src_account_name",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.src_database",
+													"type": "Expression"
+												},
+												"warehouse": {
+													"value": "@pipeline().parameters.src_warehouse",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.src_username",
+													"type": "Expression"
+												},
+												"role": {
+													"value": "@pipeline().parameters.src_role",
+													"type": "Expression"
+												},
+												"kvpassword": {
+													"value": "@pipeline().parameters.src_kvpassword",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_AZURE_SQL",
+											"type": "DatasetReference",
+											"parameters": {
+												"table_schema": {
+													"value": "@pipeline().parameters.sink_staging_table_schema",
+													"type": "Expression"
+												},
+												"table_name": {
+													"value": "@pipeline().parameters.sink_staging_table_name",
+													"type": "Expression"
+												},
+												"server": {
+													"value": "@pipeline().parameters.sink_server",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.sink_database",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.sink_username",
+													"type": "Expression"
+												},
+												"secretname": {
+													"value": "@pipeline().parameters.sink_secretname",
+													"type": "Expression"
+												}
+											}
+										}
+									]
+								},
+								{
+									"name": "Stored procedure - IL Selected Columns",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "Copy data - IL Snowflake Tables Selected Cols",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[[dbo].[sp_compare_and_merge_tables]",
+										"storedProcedureParameters": {
+											"raw_schema": {
+												"value": {
+													"value": "@pipeline().parameters.sink_table_schema",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"raw_table_name": {
+												"value": {
+													"value": "@pipeline().parameters.sink_table_name",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"staging_schema": {
+												"value": {
+													"value": "@pipeline().parameters.sink_staging_table_schema",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"staging_table_name": {
+												"value": {
+													"value": "@pipeline().parameters.sink_staging_table_name",
+													"type": "Expression"
+												},
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "[parameters('LS_AZURE_SQL')]",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"server": {
+												"value": "@pipeline().parameters.sink_server",
+												"type": "Expression"
+											},
+											"database": {
+												"value": "@pipeline().parameters.sink_database",
+												"type": "Expression"
+											},
+											"username": {
+												"value": "@pipeline().parameters.sink_username",
+												"type": "Expression"
+											},
+											"secretname": {
+												"value": "@pipeline().parameters.sink_secretname",
+												"type": "Expression"
+											}
+										}
+									}
+								}
+							],
+							"ifTrueActivities": [
+								{
+									"name": "Copy data - Snowflake Tables All Cols_copy1_copy1",
+									"description": "Copy the Snowflake tables and load it into ADLS as PARQUET",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.00:40:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SnowflakeV2Source",
+											"query": {
+												"value": "@concat('SELECT * FROM '\n            , pipeline().parameters.src_schema\n            , '.'\n            ,toUpper(pipeline().parameters.src_object_name)\n            , ' WHERE '\n            , toUpper(pipeline().parameters.incremental_field)\n            , ' > '\n            , ' SELECT MAX('\n            , toUpper(pipeline().parameters.incremental_field)\n            , ') FROM '\n            , pipeline().parameters.sink_table_schema\n            , '.'\n            , pipeline().parameters.sink_table_name\n        )",
+												"type": "Expression"
+											},
+											"exportSettings": {
+												"type": "SnowflakeExportCopyCommand",
+												"additionalCopyOptions": {
+													"MAX_FILE_SIZE": "1073741824"
+												}
+											}
+										},
+										"sink": {
+											"type": "AzureSqlSink",
+											"preCopyScript": {
+												"value": "@concat('DROP TABLE IF EXISTS ',pipeline().parameters.sink_staging_table_schema,'.',pipeline().parameters.sink_staging_table_name)",
+												"type": "Expression"
+											},
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false,
+											"tableOption": "autoCreate",
+											"disableMetricsCollection": false
+										},
+										"enableStaging": true,
+										"stagingSettings": {
+											"linkedServiceName": {
+												"referenceName": "[parameters('LS_BLOB_SAS_URI')]",
+												"type": "LinkedServiceReference"
+											},
+											"path": {
+												"value": "@pipeline().parameters.stg_directory",
+												"type": "Expression"
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_SNOWFLAKE_QUERY",
+											"type": "DatasetReference",
+											"parameters": {
+												"account_name": {
+													"value": "@pipeline().parameters.src_account_name",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.src_database",
+													"type": "Expression"
+												},
+												"warehouse": {
+													"value": "@pipeline().parameters.src_warehouse",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.src_username",
+													"type": "Expression"
+												},
+												"role": {
+													"value": "@pipeline().parameters.src_role",
+													"type": "Expression"
+												},
+												"kvpassword": {
+													"value": "@pipeline().parameters.src_kvpassword",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_AZURE_SQL",
+											"type": "DatasetReference",
+											"parameters": {
+												"table_schema": {
+													"value": "@pipeline().parameters.sink_staging_table_schema",
+													"type": "Expression"
+												},
+												"table_name": {
+													"value": "@pipeline().parameters.sink_staging_table_name",
+													"type": "Expression"
+												},
+												"server": {
+													"value": "@pipeline().parameters.sink_server",
+													"type": "Expression"
+												},
+												"database": {
+													"value": "@pipeline().parameters.sink_database",
+													"type": "Expression"
+												},
+												"username": {
+													"value": "@pipeline().parameters.sink_username",
+													"type": "Expression"
+												},
+												"secretname": {
+													"value": "@pipeline().parameters.sink_secretname",
+													"type": "Expression"
+												}
+											}
+										}
+									]
+								},
+								{
+									"name": "Stored procedure1",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "Copy data - Snowflake Tables All Cols_copy1_copy1",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[[dbo].[sp_compare_and_merge_tables]",
+										"storedProcedureParameters": {
+											"raw_schema": {
+												"value": {
+													"value": "@pipeline().parameters.sink_table_schema",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"raw_table_name": {
+												"value": {
+													"value": "@pipeline().parameters.sink_table_name",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"staging_schema": {
+												"value": {
+													"value": "@pipeline().parameters.sink_staging_table_schema",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"staging_table_name": {
+												"value": {
+													"value": "@pipeline().parameters.sink_staging_table_name",
+													"type": "Expression"
+												},
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "[parameters('LS_AZURE_SQL')]",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"server": {
+												"value": "@pipeline().parameters.sink_server",
+												"type": "Expression"
+											},
+											"database": {
+												"value": "@pipeline().parameters.sink_database",
+												"type": "Expression"
+											},
+											"username": {
+												"value": "@pipeline().parameters.sink_username",
+												"type": "Expression"
+											},
+											"secretname": {
+												"value": "@pipeline().parameters.sink_secretname",
+												"type": "Expression"
+											}
+										}
+									}
+								}
+							]
+						}
+					}
+				],
+				"parameters": {
+					"relative_url_or_input_query": {
+						"type": "string"
+					},
+					"src_account_name": {
+						"type": "string"
+					},
+					"src_database": {
+						"type": "string"
+					},
+					"src_warehouse": {
+						"type": "string"
+					},
+					"src_username": {
+						"type": "string"
+					},
+					"src_role": {
+						"type": "string"
+					},
+					"src_kvpassword": {
+						"type": "string"
+					},
+					"src_schema": {
+						"type": "string"
+					},
+					"src_object_name": {
+						"type": "string"
+					},
+					"sink_table_schema": {
+						"type": "string"
+					},
+					"sink_table_name": {
+						"type": "string"
+					},
+					"sink_server": {
+						"type": "string"
+					},
+					"sink_database": {
+						"type": "string"
+					},
+					"sink_username": {
+						"type": "string"
+					},
+					"sink_secretname": {
+						"type": "string"
+					},
+					"stg_directory": {
+						"type": "string"
+					},
+					"incremental_field": {
+						"type": "string"
+					},
+					"sink_staging_table_schema": {
+						"type": "string"
+					},
+					"sink_staging_table_name": {
+						"type": "string"
+					}
+				},
+				"folder": {
+					"name": "02_SRC_TO_DESTINATION/77_SNOWFLAKE/02_SF_TO_AZURE_SQL"
+				},
+				"annotations": [],
+				"lastPublishTime": "2024-03-14T20:25:43Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_SNOWFLAKE_QUERY')]",
+				"[concat(variables('factoryId'), '/datasets/DS_AZURE_SQL')]"
+			]
+		}
+	]
+}
