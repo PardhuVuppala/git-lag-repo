@@ -1,0 +1,9 @@
+{
+	"name": "projectsclientlag",
+	"location": "eastus",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "b52262cc-209a-4a03-90d1-afefe951b5ed",
+		"tenantId": "668a7d9e-da49-4179-acbd-62631110f0db"
+	}
+}
